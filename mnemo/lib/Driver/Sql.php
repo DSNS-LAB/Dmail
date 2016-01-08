@@ -1,0 +1,397 @@
+<?php
+/**
+ * Mnemo storage implementation for Horde's Horde_Db database abstraction
+ * layer.
+ *
+ * Copyright 2001-2015 Horde LLC (http://www.horde.org/)
+ *
+ * See the enclosed file LICENSE for license information (ASL). If you
+ * did not receive this file, see http://www.horde.org/licenses/apache.
+ *
+ * @author  Chuck Hagenbuch <chuck@horde.org>
+ * @author  Michael J. Rubinsky <mrubinsk@horde.org>
+ * @package Mnemo
+ */
+class Mnemo_Driver_Sql extends Mnemo_Driver
+{
+    /**
+     * The database connection object.
+     *
+     * @var Horde_Db_Adapter
+     */
+    protected $_db;
+
+    /**
+     * Share table name
+     *
+     * @var string
+     */
+    protected $_table;
+
+    /**
+     * Charset
+     *
+     * @var string
+     */
+    protected $_charset;
+
+    /**
+     * Column definition of body column.
+     *
+     * @var Horde_Db_Adapter_Base_Column
+     */
+    protected $_column;
+
+    /**
+     * Construct a new SQL storage object.
+     *
+     * @param string $notepad  The name of the notepad to load/save notes from.
+     * @param array $params    The connection parameters
+     *
+     * @throws InvalidArguementException
+     */
+    public function __construct($notepad, $params = array())
+    {
+        if (empty($params['db']) || empty($params['table'])) {
+            throw new InvalidArgumentException('Missing required connection parameter(s).');
+        }
+        $this->_notepad = $notepad;
+        $this->_db = $params['db'];
+        $this->_table = $params['table'];
+        $this->_charset = $params['charset'];
+
+        $this->_column = $this->_db->column($params['table'], 'memo_body');
+    }
+
+    /**
+     * Retrieves all of the notes of the current notepad from the backend.
+     *
+     * @throws Mnemo_Exception
+     */
+    public function retrieve()
+    {
+        $query = sprintf('SELECT * FROM %s WHERE memo_owner = ?', $this->_table);
+        $values = array($this->_notepad);
+
+        try {
+            $rows = $this->_db->selectAll($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        // Store the retrieved values in a fresh list.
+        $this->_memos = array();
+        foreach ($rows as $row) {
+            $this->_memos[$row['memo_id']] = $this->_buildNote($row);
+        }
+    }
+
+    /**
+     * Retrieves one note from the backend.
+     *
+     * @param string $noteId      The ID of the note to retrieve.
+     * @param string $passphrase  A passphrase with which this note was
+     *                            supposed to be encrypted.
+     *
+     * @return array  The array of note attributes.
+     * @throws Mnemo_Exception
+     * @throws Horde_Exception_NotFound
+     */
+    public function get($noteId, $passphrase = null)
+    {
+        $query = 'SELECT * FROM ' . $this->_table .
+                 ' WHERE memo_owner = ? AND memo_id = ?';
+        $values = array($this->_notepad, $noteId);
+        try {
+            $row = $this->_db->selectOne($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        if (!$row) {
+            throw new Horde_Exception_NotFound();
+        }
+
+        return $this->_buildNote($row, $passphrase);
+    }
+
+    /**
+     * Retrieves one note from the backend by UID.
+     *
+     * @param string $uid         The UID of the note to retrieve.
+     * @param string $passphrase  A passphrase with which this note was
+     *                            supposed to be encrypted.
+     *
+     * @return array  The array of note attributes.
+     * @throws Mnemo_Exception
+     * @throws Horde_Exception_NotFound
+     */
+    public function getByUID($uid, $passphrase = null)
+    {
+        $query = 'SELECT * FROM ' . $this->_table . ' WHERE memo_uid = ?';
+        $values = array($uid);
+        try {
+            $row = $this->_db->selectOne($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        if (!count($row)) {
+            throw new Horde_Exception_NotFound('Not found');
+        }
+        $this->_notepad = $row['memo_owner'];
+
+        return $this->_buildNote($row, $passphrase);
+    }
+
+    /**
+     * Adds a note to the backend storage.
+     *
+     * @param string $noteId  The ID of the new note.
+     * @param string $desc    The first line of the note.
+     * @param string $body    The whole note body.
+     * @param string $tags    The tags of the note.
+     *
+     * @return string  The unique ID of the new note.
+     * @throws Mnemo_Exception
+     */
+    protected function _add($noteId, $desc, $body, $tags)
+    {
+        $uid = strval(new Horde_Support_Uuid());
+
+        $query = 'INSERT INTO ' . $this->_table
+            . ' (memo_owner, memo_id, memo_desc, memo_body, memo_uid)'
+            . ' VALUES (?, ?, ?, ?, ?)';
+        $values = array(
+            $this->_notepad,
+            $noteId,
+            Horde_String::convertCharset($desc, 'UTF-8', $this->_charset),
+            Horde_String::convertCharset($body, 'UTF-8', $this->_charset),
+            Horde_String::convertCharset($uid, 'UTF-8', $this->_charset)
+        );
+
+        try {
+            $this->_db->insert($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e);
+        }
+
+        return $uid;
+    }
+
+    /**
+     * Modifies an existing note.
+     *
+     * @param string $noteId  The note to modify.
+     * @param string $desc    The first line of the note.
+     * @param string $body    The whole note body.
+     * @param string $tags    The tags of the note.
+     *
+     * @throws Mnemo_Exception
+     */
+    protected function _modify($noteId, $desc, $body, $tags)
+    {
+        $query  = 'UPDATE ' . $this->_table
+            . ' SET memo_desc = ?, memo_body = ?'
+            . ' WHERE memo_owner = ? AND memo_id = ?';
+        $values = array(
+            Horde_String::convertCharset($desc, 'UTF-8', $this->_charset),
+            Horde_String::convertCharset($body, 'UTF-8', $this->_charset),
+            $this->_notepad,
+            $noteId
+        );
+
+        try {
+            $this->_db->update($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e);
+        }
+
+        $note = $this->get($noteId);
+
+        return $note['uid'];
+    }
+
+    /**
+     * Moves a note to a new notepad.
+     *
+     * @param string $noteId      The note to move.
+     * @param string $newNotepad  The new notepad.
+     *
+     * @return string  The note's UID.
+     * @throws Mnemo_Exception
+     */
+    protected function _move($noteId, $newNotepad)
+    {
+        // Get the note's details for use later.
+        $note = $this->get($noteId);
+
+        $query = 'UPDATE ' . $this->_table .
+                 ' SET memo_owner = ?' .
+                 ' WHERE memo_owner = ? AND memo_id = ?';
+        $values = array($newNotepad, $this->_notepad, $noteId);
+        try {
+            $result = $this->_db->update($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        return $note['uid'];
+    }
+
+    /**
+     * Deletes a note permanently.
+     *
+     * @param array $note  The note to delete.
+     *
+     * @return string  The note's UID.
+     * @throws Mnemo_Exception
+     */
+    protected function _delete($noteId)
+    {
+        // Get the note's details for use later.
+        $note = $this->get($noteId);
+
+        $query = 'DELETE FROM ' . $this->_table .
+                 ' WHERE memo_owner = ? AND memo_id = ?';
+        $values = array($this->_notepad, $noteId);
+
+        try {
+            $this->_db->delete($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        return $note['uid'];
+    }
+
+    /**
+     * Deletes all notes from the current notepad.
+     *
+     * @return array  An array of uids that have been removed.
+     * @throws Mnemo_Exception
+     */
+    protected function _deleteAll()
+    {
+        // Get list of notes we are removing so we can tell history about it.
+        $query = sprintf('SELECT memo_uid FROM %s WHERE memo_owner = ?',
+                         $this->_table);
+        $values = array($this->_notepad);
+        try {
+            $ids = $this->_db->selectValues($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        $query = sprintf('DELETE FROM %s WHERE memo_owner = ?', $this->_table);
+        try {
+            $this->_db->delete($query, $values);
+        } catch (Horde_Db_Exception $e) {
+            throw new Mnemo_Exception($e->getMessage());
+        }
+
+        return $ids;
+    }
+
+    /**
+     *
+     * @param array $row           Hash of the note data, db keys.
+     * @param string  $passphrase  The encryption passphrase.
+     *
+     * @return array a Task hash.
+     * @throws Mnemo_Exception
+     */
+    protected function _buildNote($row, $passphrase = null)
+    {
+        // Make sure notes always have a UID.
+        if (empty($row['memo_uid'])) {
+            $row['memo_uid'] = strval(new Horde_Support_Guid());
+
+            $query = 'UPDATE ' . $this->_table .
+                ' SET memo_uid = ?' .
+                ' WHERE memo_owner = ? AND memo_id = ?';
+            $values = array($row['memo_uid'], $row['memo_owner'], $row['memo_id']);
+            try {
+                $this->_db->update($query, $values);
+            } catch (Horde_Db_Exception $e) {
+                throw new Mnemo_Exception($e->getMessage());
+            }
+        }
+
+        // Decrypt note if requested.
+        $encrypted = false;
+        $body = $this->_column->binaryToString($row['memo_body']);
+        $body = Horde_String::convertCharset($body, $this->_charset, 'UTF-8');
+        if (strpos($body, '-----BEGIN PGP MESSAGE-----') === 0) {
+            $encrypted = true;
+            if (empty($passphrase)) {
+                $passphrase = Mnemo::getPassphrase($row['memo_id']);
+            }
+            if (empty($passphrase)) {
+                $body = new Mnemo_Exception(_("This note has been encrypted."), Mnemo::ERR_NO_PASSPHRASE);
+            } else {
+                try {
+                    $body = $this->_decrypt($body, $passphrase);
+                    $body = $body->message;
+                } catch (Mnemo_Exception $e) {
+                    $body = $e;
+                }
+                Mnemo::storePassphrase($row['memo_id'], $passphrase);
+            }
+        }
+
+        // Create a new note based on $row's values.
+        $uid = Horde_String::convertCharset(
+            $row['memo_uid'], $this->_charset, 'UTF-8'
+        );
+        $memo = array(
+            'memolist_id' => $row['memo_owner'],
+            'memo_id' => $row['memo_id'],
+            'uid' => $uid,
+            'desc' => Horde_String::convertCharset(
+                $row['memo_desc'], $this->_charset, 'UTF-8'),
+            'body' => $body,
+            'tags' => $GLOBALS['injector']->getInstance('Mnemo_Tagger')->getTags($uid, 'note'),
+            'encrypted' => $encrypted);
+
+        try {
+            $userId = $GLOBALS['registry']->getAuth();
+            $log = $GLOBALS['injector']->getInstance('Horde_History')
+                ->getHistory('mnemo:' . $row['memo_owner'] . ':' . $row['memo_uid']);
+            foreach ($log as $entry) {
+                switch ($entry['action']) {
+                case 'add':
+                    $memo['created'] = new Horde_Date($entry['ts']);
+                    if ($userId != $entry['who']) {
+                        $memo['createdby'] = sprintf(_("by %s"), Mnemo::getUserName($entry['who']));
+                    } else {
+                        $memo['createdby'] = _("by me");
+                    }
+                    break;
+
+                case 'modify':
+                    $memo['modified'] = new Horde_Date($entry['ts']);
+                    if ($userId != $entry['who']) {
+                        $memo['modifiedby'] = sprintf(_("by %s"), Mnemo::getUserName($entry['who']));
+                    } else {
+                        $memo['modifiedby'] = _("by me");
+                    }
+                    break;
+                }
+            }
+        } catch (Horde_Exception $e) {
+        }
+
+        return $memo;
+    }
+
+    /**
+     * Generates a local note ID.
+     *
+     * @return string  A new note ID.
+     */
+    protected function _generateId()
+    {
+        return strval(new Horde_Support_Randomid());
+    }
+}

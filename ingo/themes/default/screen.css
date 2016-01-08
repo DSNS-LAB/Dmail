@@ -1,0 +1,108 @@
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+/* Scripts page. */
+.scriptHeader {
+    width: 100%;
+}
+.scriptHeader form {
+    display: inline;
+}
+
+/* Filters page. */
+.filtersRow {
+    cursor: move;
+    height: 30px;
+    line-height: 30px;
+}
+.filtersRow div {
+    display: inline-block;
+}
+.filtersEdit {
+    width: 50px;
+}
+.filtersEnable {
+    padding-left: 12px;
+}
+.filtersDisabled a {
+    color: red;
+}
+
+#filtersSave {
+    background-color: rgba(0,0,0,0.35);
+    position: absolute;
+    z-index: 100;
+}
+#filtersSave span {
+    background-color: #ddd;
+    left: 15px;
+    padding: 5px;
+    position: absolute;
+    top: 15px;
+}
+
+/* Rules page. */
+.ruleAction, .ruleCondition, .ruleMatch {
+    margin-left: 20px;
+}
+.ruleAction, .ruleMatch {
+    margin-bottom: 10px;
+}
+.ruleCondition input {
+    vertical-align: middle;
+}
+.ruleCondition label {
+    padding-right: 8px;
+}
+.ruleMatchRow {
+    padding-bottom: 5px;
+}
+.ruleMatchRow div {
+    display: inline-block;
+    padding-right: 5px;
+}
+.ruleMatchCondition {
+    width: 30px;
+}
+.ruleStopChecking {
+    margin-right: 5px;
+    vertical-align: middle;
+}
+.caseSensitive {
+    margin-left: 5px;
+    vertical-align: middle;
+}
+
+/* Blacklist page. */
+.blacklistAction {
+    margin-left: 15px;
+    margin-bottom: 15px;
+}
+.blacklistAction input {
+    vertical-align: middle;
+}
+
+/* Icons. */
+.ingo-rules {
+    background-image: url('graphics/ingo.png');
+}
+.ingo-vacation {
+    background-image: url('graphics/vacation.png');
+}
+.ingo-forward {
+    background-image: url('graphics/forward.png');
+}
+.ingo-spam {
+    background-image: url('graphics/spam.png');
+}
+.ingo-script {
+    background-image: url('graphics/script.png');
+}
+.ingo-whitelist {
+    background-image: url('graphics/whitelist.png');
+}
+.ingo-blacklist {
+    background-image: url('graphics/blacklist.png');
+}

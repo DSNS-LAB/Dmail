@@ -1,0 +1,452 @@
+/**
+ * Basic compose view.
+ *
+ * @author     Michael Slusarz <slusarz@horde.org>
+ * @copyright  2014-2015 Horde LLC
+ * @license    GPL-2 (http://www.horde.org/licenses/gpl)
+ */
+
+var ImpCompose = {
+
+    // Variables defined in PHP code:
+    //   cancel_url, cursor_pos, discard_url, last_identity,
+    //   last_msg, last_sig, max_attachments, popup, redirect, reloaded, rte,
+    //   sc_submit, sm_check, skip_spellcheck, spellcheck, text
+
+    display_unload_warning: true,
+
+    confirmCancel: function(discard, e)
+    {
+        e.stop();
+
+        if (window.confirm(this.text.cancel)) {
+            this.display_unload_warning = false;
+
+            if (this.popup) {
+                if (this.cancel_url) {
+                    self.location = (discard ? this.discard_url : this.cancel_url);
+                } else {
+                    self.close();
+                }
+            } else {
+                window.location = (discard ? this.discard_url : this.cancel_url);
+            }
+        }
+    },
+
+    changeIdentity: function(elt)
+    {
+        var id = $F(elt),
+            last = ImpComposeBase.identities[$F('last_identity')],
+            next = ImpComposeBase.identities[id],
+            bcc = $('bcc'),
+            save = $('ssm'),
+            sm = $('sent_mail'),
+            re, cur_sig;
+
+        cur_sig = this.sigHash();
+        if (this.last_sig &&
+            this.last_sig != cur_sig &&
+            !window.confirm(this.text.change_identity)) {
+            return false;
+        }
+        this.last_sig = cur_sig;
+
+        if (this.sm_check) {
+            sm.setValue(next.sm_name);
+        } else {
+            sm.update(next.sm_display);
+        }
+
+        if (save) {
+            save.setValue(next.sm_save);
+        }
+        if (bcc) {
+            bccval = $F(bcc);
+
+            if (last.bcc) {
+                re = new RegExp(last.bcc + ",? ?", 'gi');
+                bccval = bccval.replace(re, "");
+                if (bccval) {
+                    bccval = bccval.replace(/, ?$/, "");
+                }
+            }
+
+            if (next.bcc) {
+                if (bccval) {
+                    bccval += ', ';
+                }
+                bccval += next.bcc;
+            }
+
+            bcc.setValue(bccval);
+        }
+        ImpComposeBase.setSignature(ImpComposeBase.editor_on, next);
+        this.last_identity = $F('identity');
+
+        return true;
+    },
+
+    uniqSubmit: function(actionID, e)
+    {
+        var cur_msg, form, sc;
+
+        if (!Object.isUndefined(e)) {
+            e.stop();
+        }
+
+        switch (actionID) {
+        case 'redirect':
+            if ($F('to').empty()) {
+                alert(this.text.recipient);
+                ImpComposeBase.focus('to');
+                return;
+            }
+
+            form = $('redirect');
+            break;
+
+        case 'send_message':
+            sc = ImpComposeBase.getSpellChecker();
+
+            if (sc &&
+                !this.skip_spellcheck &&
+                this.spellcheck &&
+                !sc.isActive()) {
+                this.sc_submit = { a: actionID, e: e };
+                sc.spellCheck();
+                return;
+            }
+
+            if ($F('subject').empty() &&
+                !window.confirm(this.text.nosubject)) {
+                return;
+            }
+
+            this.skip_spellcheck = false;
+
+            if (sc) {
+                sc.resume();
+            }
+            // fall through
+
+        case 'add_attachment':
+        case 'replyall_revert':
+        case 'replylist_revert':
+        case 'save_draft':
+        case 'save_template':
+            form = $('compose');
+            $('actionID').setValue(actionID);
+            break;
+
+        case 'auto_save_draft':
+            // Move HTML text to textarea field for submission.
+            if (this.rte) {
+                this.rte.updateElement();
+            }
+
+            cur_msg = IMP_JS.fnv_1a(
+                $('to', 'cc', 'bcc', 'subject').compact().invoke('getValue').join('\0') + $F('composeMessage')
+            );
+            if (this.last_msg && curr_hash != this.last_msg) {
+                // Use an AJAX submit here so that the page doesn't reload.
+                $('actionID').setValue(actionID);
+                HordeCore.submitForm('compose', {
+                    callback: this._autoSaveDraftCallback.bind(this)
+                });
+            }
+            this.last_msg = cur_msg;
+            return;
+
+        case 'toggle_editor':
+            form = $('compose');
+            break;
+
+        default:
+            return;
+        }
+
+        $(document).fire('AutoComplete:update');
+
+        if (this.rte && this.rte.busy()) {
+            return this.uniqSubmit.bind(this, actionID, e).delay(0.1);
+        }
+
+        // Ticket #6727; this breaks on WebKit w/FCKeditor.
+        if (!Prototype.Browser.WebKit) {
+            form.setStyle({ cursor: 'wait' });
+        }
+
+        this.display_unload_warning = false;
+        form.submit();
+    },
+
+    _autoSaveDraftCallback: function(r)
+    {
+        $('compose_formToken').setValue(r.formToken);
+        $('compose_requestToken').setValue(r.requestToken);
+    },
+
+    attachmentChanged: function()
+    {
+        var fields = [],
+            usedFields = 0,
+            input, lastRow, newRow, td;
+
+        $('upload_atc').select('input[type="file"]').each(function(i) {
+            fields[fields.length] = i;
+        });
+
+        if (this.max_attachments !== null &&
+            fields.length == this.max_attachments) {
+            return;
+        }
+
+        fields.each(function(i) {
+            if (i.value.length > 0) {
+                usedFields++;
+            }
+        });
+
+        if (usedFields == fields.length) {
+            lastRow = $('attachment_row_' + usedFields);
+            if (lastRow) {
+                td = new Element('TD', { align: 'left' }).insert(new Element('STRONG').insert(this.text.file + ' ' + (usedFields + 1) + ':')).insert('&nbsp;');
+
+                input = new Element('INPUT', { type: 'file', id: 'upload_' + (usedFields + 1), name: 'upload_' + (usedFields + 1), size: 25 });
+                if (Prototype.Browser.IE) {
+                    input.observe('change', this.changeHandler.bindAsEventListener(this));
+                }
+                td.insert(input);
+
+                newRow = new Element('TR', { id: 'attachment_row_' + (usedFields + 1) }).insert(td);
+
+                lastRow.parentNode.insertBefore(newRow, lastRow.nextSibling);
+            }
+        }
+    },
+
+    sigHash: function()
+    {
+        return $('signature')
+            ? IMP_JS.fnv_1a(this.rte ? this.rte.getData() : $F('signature'))
+            : 0;
+    },
+
+    updateSigHash: function()
+    {
+        if (this.rte && this.rte.busy()) {
+            this.updateSigHash.bind(this).delay(0.1);
+        } else {
+            this.last_sig = this.sigHash();
+        }
+    },
+
+    clickHandler: function(e)
+    {
+        var name,
+            elt = e.element(),
+            id = elt.readAttribute('id');
+
+        switch (id) {
+        case 'addressbook_popup':
+            window.open(this.contacts_url, "contacts", "toolbar=no,location=no,status=no,scrollbars=yes,resizable=yes,width=550,height=300,left=100,top=100");
+            break;
+
+        case 'redirect_abook':
+            window.open(this.redirect_contacts, "contacts", "toolbar=no,location=no,status=no,scrollbars=yes,resizable=yes,width=550,height=300,left=100,top=100");
+            break;
+
+        case 'rte_toggle':
+            $('rtemode').setValue(~~(!ImpComposeBase.editor_on));
+            this.uniqSubmit('toggle_editor');
+            break;
+
+        default:
+            if (elt.match('INPUT[type=submit]')) {
+                name = elt.readAttribute('name');
+                switch (name) {
+                case 'btn_add_attachment':
+                case 'btn_redirect':
+                case 'btn_replyall_revert':
+                case 'btn_replylist_revert':
+                case 'btn_save_draft':
+                case 'btn_save_template':
+                case 'btn_send_message':
+                    this.uniqSubmit(name.substring(4), e.memo);
+                    break;
+
+                case 'btn_cancel_compose':
+                case 'btn_discard_compose':
+                    this.confirmCancel(name == 'btn_discard_compose', e.memo);
+                    break;
+                }
+            }
+        }
+    },
+
+    changeHandler: function(e)
+    {
+        var elt = e.element(),
+            id = elt.identify();
+
+        switch (id) {
+        case 'identity':
+            if (!this.changeIdentity(elt)) {
+                $('identity').setValue(this.last_identity);
+            }
+            break;
+
+        case 'sent_mail':
+            $('ssm').writeAttribute('checked', 'checked');
+            break;
+
+        default:
+            if (id.substring(0, 7) == 'upload_') {
+                this.attachmentChanged();
+            }
+            break;
+        }
+    },
+
+    keyDownHandler: function(e)
+    {
+        if (e.keyCode == 10 || e.keyCode == Event.KEY_RETURN) {
+            e.stop();
+        }
+    },
+
+    onDomLoad: function()
+    {
+        var config, handler;
+
+        HordeCore.initHandler('click');
+
+        if (this.redirect) {
+            ImpComposeBase.focus('to');
+        } else {
+            ImpComposeBase.setSignature(
+                ImpComposeBase.editor_on,
+                ($('signature') && $F('signature'))
+                    ? $F('signature')
+                    : ImpComposeBase.identities[$F('last_identity')]
+            );
+
+            handler = this.keyDownHandler.bindAsEventListener(this);
+            /* Prevent Return from sending messages - it should bring us out
+             * of autocomplete, not submit the whole form. */
+            $('compose').select('INPUT').each(function(i) {
+                /* Attach to everything but button and submit elements. */
+                if (i.type != 'submit' && i.type != 'button') {
+                    i.observe('keydown', handler);
+                }
+            });
+
+            ImpComposeBase.setCursorPosition('composeMessage', this.cursor_pos);
+
+            if (Prototype.Browser.IE) {
+                $('subject').observe('keydown', function(e) {
+                    if (e.keyCode == Event.KEY_TAB && !e.shiftKey) {
+                        e.stop();
+                        ImpComposeBase.focus('composeMessage');
+                    }
+                });
+            }
+
+            if (ImpComposeBase.editor_on) {
+                config = Object.clone(IMP.ckeditor_config);
+                config.extraPlugins = 'pasteignore';
+                this.rte = new IMP_Editor('composeMessage', config);
+
+                document.observe('SpellChecker:after', this._onAfterSpellCheck.bind(this));
+                document.observe('SpellChecker:before', this._onBeforeSpellCheck.bind(this));
+            }
+
+            if ($('to') && !$F('to')) {
+                ImpComposeBase.focus('to');
+            } else if (!$F('subject')) {
+                ImpComposeBase.focus(this.rte ? 'subject' : 'composeMessage');
+            }
+
+            document.observe('SpellChecker:noerror', this._onNoErrorSpellCheck.bind(this));
+
+            if (Prototype.Browser.IE) {
+                $('identity', 'sent_mail', 'upload_1').compact().invoke('observe', 'change', this.changeHandler.bindAsEventListener(this));
+            } else {
+                document.observe('change', this.changeHandler.bindAsEventListener(this));
+            }
+
+            if (this.auto_save) {
+                /* Immediately execute to get MD5 hash of empty message. */
+                new PeriodicalExecuter(this.uniqSubmit.bind(this, 'auto_save_draft'), this.auto_save * 60).execute();
+            }
+            this.last_identity = $F('identity');
+            this.updateSigHash();
+        }
+
+        this.resize.bind(this).delay(0.25);
+    },
+
+    _onAfterSpellCheck: function()
+    {
+        this.rte.setData($F('composeMessage'));
+        $('composeMessage').next().show();
+        delete this.sc_submit;
+    },
+
+    _onBeforeSpellCheck: function()
+    {
+        ImpComposeBase.getSpellChecker().htmlAreaParent = 'composeMessageParent';
+        $('composeMessage').next().hide();
+        this.rte.updateElement();
+    },
+
+    _onNoErrorSpellCheck: function()
+    {
+        if (this.sc_submit) {
+            this.skip_spellcheck = true;
+            this.uniqSubmit(this.sc_submit.a, this.sc_submit.e);
+        } else if (ImpComposeBase.editor_on) {
+            this._onAfterSpellCheck();
+        } else {
+            delete this.sc_submit;
+        }
+    },
+
+    resize: function()
+    {
+        var d, e = this.redirect ? $('redirect') : $('compose');
+
+        if (this.popup && !this.reloaded) {
+            e = e.getHeight();
+            if (!e) {
+                return this.resize.bind(this).delay(0.1);
+            }
+            d = Math.min(e, screen.height - 50) - document.viewport.getHeight();
+            if (d > 0) {
+                window.resizeBy(0, d);
+            }
+        }
+    },
+
+    onBeforeUnload: function()
+    {
+        if (this.display_unload_warning) {
+            return this.text.discard;
+        }
+    }
+
+};
+
+/* Code to run on window load. */
+document.observe('dom:loaded', ImpCompose.onDomLoad.bind(ImpCompose));
+
+/* Warn before closing the window. */
+Event.observe(window, 'beforeunload', ImpCompose.onBeforeUnload.bind(ImpCompose));
+
+/* Attach event handlers. */
+document.observe('HordeCore:click', ImpCompose.clickHandler.bindAsEventListener(ImpCompose));
+document.observe('ImpContacts:update', ImpComposeBase.updateAddressField.bindAsEventListener(ImpComposeBase));
+
+/* Catch dialog actions. */
+document.observe('ImpPassphraseDialog:success', ImpCompose.uniqSubmit.bind(ImpCompose, 'send_message'));
